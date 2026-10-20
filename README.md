@@ -12,7 +12,7 @@ gh auth login
 woreda init --human
 ```
 
-Version 6 is the new runner management CLI; earlier npm releases were a different project. Prefer a single executable? Use the [standalone downloads](https://github.com/samifouad/woreda/releases/tag/v6.0.0), which do not need Bun.
+Version 6 is the new runner management CLI; earlier npm releases were a different project. Prefer a single executable? Use the [standalone downloads](https://github.com/addiscorp/woreda/releases/tag/v6.0.0), which do not need Bun.
 
 The setup wizard asks which machine to connect to and which GitHub repository or organization it should work for. For example: `sami@bugsy` and `tana3d/studio`. It installs GitHub's runner, starts the service, and checks that GitHub sees it online.
 

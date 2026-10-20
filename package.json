@@ -29,7 +29,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/samifouad/woreda.git"
+    "url": "https://github.com/addiscorp/woreda.git"
   },
   "author": "Sami Fouad",
   "license": "Apache-2.0",
@@ -43,7 +43,7 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "homepage": "https://github.com/samifouad/woreda",
+  "homepage": "https://github.com/addiscorp/woreda",
   "keywords": [
     "github-actions",
     "self-hosted",

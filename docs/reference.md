@@ -11,7 +11,7 @@ No dashboard server, remote Bun/Python installation, or separate runner database
 
 ## Install
 
-Download an executable from [Releases](https://github.com/samifouad/woreda/releases),
+Download an executable from [Releases](https://github.com/addiscorp/woreda/releases),
 make it executable, and put it on your PATH. The compiled executable does not need Bun.
 Or use the source:
 
@@ -55,7 +55,7 @@ For scripts or agents, provide the choices explicitly:
 
 ```sh
 woreda hosts add builder --ssh sami@builder
-woreda add --host builder --scope samifouad/woreda --name builder \
+woreda add --host builder --scope addiscorp/woreda --name builder \
   --labels woreda,release --install-dependencies
 ```
 

@@ -48,7 +48,7 @@ import { github } from 'woreda'
 
 export default defineRunner({
   name: 'zegadb-arm64',
-  forge: github({ scope: 'zegadb', app: { id: 123, installation: 456, key: 'file:~/.config/woreda/zegadb-app.pem' } }),
+  forge: github({ scope: 'zegadb', login: true }),
   labels: ['mirab'],
   image: { tools: { rust: '1.91.0', node: '24' }, packages: ['build-essential'] },
   vm: { vcpus: 4, memoryMiB: 3072, diskGiB: 30 },
@@ -56,13 +56,14 @@ export default defineRunner({
 ```
 
 ```sh
+woreda login                      # once per host: approve woreda on GitHub (device flow)
 woreda image build runners/       # build the runner image once (GitHub's runner, toolsets), cached
 woreda serve runners/             # keep a fresh VM registered and waiting; one job each
 woreda serve runners/ --install   # macOS: keep it running as a LaunchAgent
 woreda status --human             # includes this host's VM pools
 ```
 
-The GitHub adapter registers one just-in-time runner per job (labels `self-hosted`, `Linux`, the architecture, plus yours). Its credential is a GitHub App (permission "Self-hosted runners: read & write" on the organisation, or "Administration: read & write" on a repository) or a fine-grained token with that one permission, read from a file each time; only the one-job config ever enters a VM. A folder of definitions needs no `node_modules`: `mirab` and `woreda` resolve to the copies inside woreda. What each job gets, and what phase 1 leaves out (Docker in jobs, more than one VM at a time), is in mirab's [docs/RUNNERS.md](https://github.com/addiscorp/mirab/blob/main/docs/RUNNERS.md).
+The GitHub adapter registers one just-in-time runner per job (labels `self-hosted`, `Linux`, the architecture, plus yours). Its credential is `woreda login`: install the [Woreda GitHub App](https://github.com/apps/woreda-workflow-runners) on the organisation, then approve the code `woreda login` shows. The token acts as you, limited to the App's one permission (organisation self-hosted runners), and refreshes itself; it is kept in `~/.config/woreda/github-login.json` (0600). Instead, a definition can name your own GitHub App (permission "Self-hosted runners: read & write" on the organisation, or "Administration: read & write" on a repository) or a fine-grained token with that one permission, read from a file each time; only the one-job config ever enters a VM. A folder of definitions needs no `node_modules`: `mirab` and `woreda` resolve to the copies inside woreda. What each job gets, and what phase 1 leaves out (Docker in jobs, more than one VM at a time), is in mirab's [docs/RUNNERS.md](https://github.com/addiscorp/mirab/blob/main/docs/RUNNERS.md).
 
 ## Add a machine that already has runners
 

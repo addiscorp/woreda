@@ -3,7 +3,7 @@ import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { appJwt, github, releaseSha } from '../src/forges/github.ts'
-import { launchAgentPlist, loadDefinitions } from '../src/runners.ts'
+import { launchAgentPlist, loadDefinitions, mirabRelease } from '../src/runners.ts'
 
 let dir: string
 beforeAll(async () => {
@@ -135,4 +135,10 @@ export default defineRunner({ name: 'zeg', forge: github({ scope: 'zegadb', toke
         expect(plist).toContain('<string>/Users/sami/runners &amp; co</string>')
         expect(plist).toContain('<key>KeepAlive</key><true/>')
     })
+})
+
+test('the VM image is the canary of the mirab commit woreda pins', () => {
+    expect(mirabRelease('github:addiscorp/mirab#997919bf1f07c29ebb690c643fd074bc3ec476f9', '0.2.0')).toBe('0.2.0-canary-997919b')
+    expect(mirabRelease('^0.3.0', '0.3.0')).toBeUndefined()
+    expect(mirabRelease()).toMatch(/^\d+\.\d+\.\d+-canary-[0-9a-f]{7}$/)
 })

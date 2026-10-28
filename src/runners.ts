@@ -3,10 +3,17 @@ import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as mirab from 'mirab'
-import { runnerHostVm, runnerImage, runnerRecipe, runnersDir, serveRunners, type RunnerDefinition, type RunnerState } from 'mirab/runner'
+import { MIRAB_VERSION, runnerHostVm, runnerImage, runnerRecipe, runnersDir, serveRunners, type RunnerDefinition, type RunnerState } from 'mirab/runner'
+import pkg from '../package.json'
 import * as woreda from './index.ts'
 
 export const defaultMirabConfig = () => join(homedir(), '.config', 'mirab')
+
+/** woreda carries mirab from git at a pinned commit; that commit's canary is the release whose VM image matches it. */
+export function mirabRelease(dependency: string = pkg.dependencies.mirab, version = MIRAB_VERSION): string | undefined {
+    const sha = /#([0-9a-f]{7,40})$/.exec(dependency)?.[1]
+    return sha ? `${version}-canary-${sha.slice(0, 7)}` : undefined
+}
 
 let resolving = false
 /** Definition files import 'mirab' and 'woreda'; they resolve to the copies inside woreda, so a folder of definitions needs no node_modules. */
@@ -42,7 +49,7 @@ export async function loadDefinitions(path: string): Promise<RunnerDefinition[]>
 
 export async function buildImages(path: string, configDir = defaultMirabConfig(), log: (line: string) => void = line => console.error(line)) {
     const defs = await loadDefinitions(path)
-    const vm = await runnerHostVm(configDir, log)
+    const vm = await runnerHostVm(configDir, log, mirabRelease())
     const built = []
     for (const def of defs) {
         const image = await runnerImage({ configDir, vm, recipe: await runnerRecipe(def), log })
@@ -54,7 +61,7 @@ export async function buildImages(path: string, configDir = defaultMirabConfig()
 /** Serves until SIGINT/SIGTERM: busy jobs get their grace period, waiting slots stop at once. */
 export async function serve(path: string, configDir = defaultMirabConfig(), log: (line: string) => void = line => console.error(line)) {
     const defs = await loadDefinitions(path)
-    const vm = await runnerHostVm(configDir, log)
+    const vm = await runnerHostVm(configDir, log, mirabRelease())
     const stop = new AbortController()
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { log(`${signal}: stopping`); stop.abort() })
     await serveRunners(defs, { configDir, vm, signal: stop.signal, log })

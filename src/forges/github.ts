@@ -5,6 +5,7 @@ import { createSign } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { RUNNER_SETPRIV, type Forge, type RunnerPlatform } from 'mirab'
+import { loginToken } from './github-login.ts'
 import { z } from 'zod'
 
 /** Where a credential is read from, each time it's needed: `file:<path>`. Never inline. */
@@ -16,7 +17,7 @@ export const githubOptionsSchema = z.strictObject({
     /** An organisation (`zegadb`) or one repository (`addiscorp/runner-smoke`). */
     scope: z.string().regex(/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)?$/),
     /** A GitHub App installed on the scope, permission "Self-hosted runners:
-      *  read & write" (org) or "Administration: read & write" (repo) only. */
+     *  read & write" (org) or "Administration: read & write" (repo) only. */
     app: z
         .strictObject({
             id: z.number().int().positive(),
@@ -26,6 +27,9 @@ export const githubOptionsSchema = z.strictObject({
         .optional(),
     /** Or a fine-grained token with that same single permission. */
     token: secretRef.optional(),
+    /** Or `woreda login` (the device flow, acting as whoever approved it, with
+     *  the Woreda App's one permission): true for the default login file. */
+    login: z.union([z.literal(true), z.strictObject({ file: z.string() })]).optional(),
     /** Organisation runner group (1 = Default). */
     runnerGroup: z.number().int().positive().default(1),
     api: z.string().url().default('https://api.github.com'),
@@ -62,7 +66,7 @@ export type Fetch = typeof fetch
 
 export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
     const o = githubOptionsSchema.parse(input)
-    if (!o.app === !o.token) throw new Error('github(): give exactly one of app or token')
+    if ([o.app, o.token, o.login].filter(Boolean).length !== 1) throw new Error('github(): give exactly one of app, token or login')
     const repo = o.scope.includes('/')
     const base = repo ? `${o.api}/repos/${o.scope}` : `${o.api}/orgs/${o.scope}`
     let cached: { token: string; until: number } | undefined
@@ -91,6 +95,7 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
 
     async function token(): Promise<string> {
         if (o.token) return readRef(o.token)
+        if (o.login) return loginToken({ file: o.login === true ? undefined : expand(o.login.file), fetcher })
         if (cached && Date.now() < cached.until) return cached.token
         const jwt = appJwt(o.app!.id, await readRef(o.app!.key))
         const r = await call<{ token: string; expires_at: string }>(

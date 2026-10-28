@@ -8,7 +8,7 @@
         "chalk": "6.0.1",
         "commander": "15.0.0",
         "inquirer": "14.2.2",
-        "mirab": "github:addiscorp/mirab#d5d9983b73627eaa98834618a230252906503dc2",
+        "mirab": "github:addiscorp/mirab#d01ec302fbdd0a62fe6c91fc14429db0d446b897",
         "zod": "4.6.5",
       },
       "devDependencies": {
@@ -132,7 +132,7 @@
 
     "json-schema": ["json-schema@0.4.0", "", {}, "sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA=="],
 
-    "mirab": ["mirab@github:addiscorp/mirab#d5d9983", { "dependencies": { "@ai-sdk/anthropic": "4.0.78", "ai": "7.0.137", "chalk": "^5.6.2", "commander": "^14.0.1", "inquirer": "^12.9.4", "node-pty": "1.2.0-beta.15", "rixse": "github:addiscorp/rixse#03982baae18437fab5cb2ee9a372f253c4de7b2b", "smol-toml": "^1.9.0", "zod": "^4.6.5" }, "bin": { "mirab": "src/mirab.ts" } }, "addiscorp-mirab-d5d9983", "sha512-5yEoiIkLOWXTcSsgvsqmxcDNQ+RgF3khqQtSiwb7SQ+wyHpFfRROv7JUstGcZBRLdz7ZTwXuT/yjpVx9X1RbhQ=="],
+    "mirab": ["mirab@github:addiscorp/mirab#d01ec30", { "dependencies": { "@ai-sdk/anthropic": "4.0.78", "ai": "7.0.137", "chalk": "^5.6.2", "commander": "^14.0.1", "inquirer": "^12.9.4", "node-pty": "1.2.0-beta.15", "rixse": "github:addiscorp/rixse#03982baae18437fab5cb2ee9a372f253c4de7b2b", "smol-toml": "^1.9.0", "zod": "^4.6.5" }, "bin": { "mirab": "src/mirab.ts" } }, "addiscorp-mirab-d01ec30", "sha512-LzGTwSdhOqCHls2ItQlzs3mAkWCFD9vrZiPtsS32dBe1BKd8S/aLiXYb8T4A97Zh+4+JuUsf8gdxKrXYnE1d5w=="],
 
     "mute-stream": ["mute-stream@3.0.0", "", {}, "sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw=="],
 

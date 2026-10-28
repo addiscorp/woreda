@@ -9,6 +9,8 @@ import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import pkg from '../package.json'
+import type { RunnerState } from 'mirab/runner'
+import { buildImages, defaultMirabConfig, installService, pools, serve } from './runners.ts'
 
 const identifier = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/)
 const scopeSchema = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/)
@@ -525,7 +527,9 @@ async function output(value: unknown, event = false) {
 export function table(data: Snapshot) {
     const columns = [['RUNNER', 'MACHINE', 'STATE', 'SERVICE', 'TARGET LABELS'], ...data.runners.map(row => [row.selector, row.host ?? 'unmanaged', row.status, row.service?.pid ? `PID ${row.service.pid}` : row.service?.state ?? 'unmanaged', row.labels.filter(label => !['self-hosted', 'macOS', 'Linux', 'ARM64', 'X64'].includes(label)).join(', ')])]
     const widths = Array.from({ length: 4 }, (_, i) => Math.max(...columns.map(row => (row[i] ?? '').length)))
-    return columns.map(row => row.map((cell, index) => index < 4 ? cell.padEnd(widths[index]!) : cell).join('  ')).join('\n') + '\n' + data.errors.map(error => `${error.target}: ${error.message}`).join('\n')
+    const pools = (data as Snapshot & { pools?: RunnerState[] }).pools ?? []
+    const poolLines = pools.length ? '\nVM POOLS (mirab)\n' + pools.map(p => `${p.name}  ${p.forge}  ${p.slots.map(slot => `${slot.vmName} ${slot.phase}`).join(', ') || 'no slot'}  jobs ${p.jobs}${p.lastError ? `  last error: ${p.lastError.message}` : ''}`).join('\n') + '\n' : ''
+    return columns.map(row => row.map((cell, index) => index < 4 ? cell.padEnd(widths[index]!) : cell).join('  ')).join('\n') + '\n' + poolLines + data.errors.map(error => `${error.target}: ${error.message}`).join('\n')
 }
 function integer(name: string, min: number, max: number) {
     return (raw: string) => { const value = Number(raw); if (!Number.isInteger(value) || value < min || value > max) throw new InvalidArgumentError(`${name} must be between ${min} and ${max}.`); return value }
@@ -573,7 +577,7 @@ hosts.command('remove').argument('<name>').option('--yes', 'confirm configuratio
     await confirmRemoval(`Forget machine ${name}?`, options.yes)
     delete settings.hosts[name]; await saveSettings(settings); return { name, removed: true }
 }))
-program.command('status').description('join GitHub state and actual SSH service health').action(action(async () => snapshot(await loadSettings())))
+program.command('status').description('join GitHub state and actual SSH service health, and this host\'s mirab runner pools').action(action(async () => ({ ...(await snapshot(await loadSettings())), pools: await pools() })))
 program.command('doctor').description('check runner health; nonzero exit if managed runners are unhealthy').action(action(async () => {
     const data = await snapshot(await loadSettings())
     if (data.errors.length || data.runners.some(row => row.host && !['idle', 'busy'].includes(row.status))) process.exitCode = 1
@@ -593,6 +597,8 @@ program.command('update').argument('<runner>').description('verify and install t
 program.command('labels').argument('<runner>').requiredOption('--set <csv>', 'replace custom labels; automatic OS/architecture labels stay').description('manage workflow routing labels').action(action((selector: string, options: { set: string }) => setLabels(selector, options.set)))
 program.command('remove').argument('<runner>').description('stop service and unregister from GitHub; keep files by default').option('--yes', 'confirm removal without prompting').option('--force', 'allow interruption of an active job').option('--purge', 'delete files created by woreda after successful removal').option('--github-only', 'revoke registration only; remote service/files remain').action(action(removeRunner))
 program.command('logs').argument('<runner>').description('stream a selected SDK or job log (plain text)').option('--lines <count>', 'recent lines', integer('Lines', 1, 10000), 60).option('--follow', 'follow appended logs').option('--jobs', 'worker job log instead of runner log').action(action(logs))
+program.command('serve').argument('<path>', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running for this user (macOS LaunchAgent)').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string, options: { install?: boolean; mirabConfig: string }) => options.install ? installService(path) : serve(path, options.mirabConfig)))
+program.command('image').description('mirab runner images').command('build').argument('<path>', 'a runner definition (.ts) or a folder of them').description('build (or find cached) each definition\'s runner image').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action((path: string, options: { mirabConfig: string }) => buildImages(path, options.mirabConfig)))
 program.command('jobs').argument('<owner/repo>').description('recent workflow runs and links').option('--limit <count>', 'number of runs', integer('Limit', 1, 100), 5).action(action((scope: string, options: { limit: number }) => jobs(scope, options.limit)))
 program.command('groups').argument('<org>').description('list organization runner access groups').action(action((scope: string) => { identifier.parse(scope); return pages<Group>(`orgs/${scope}/actions/runner-groups`, 'runner_groups') }))
 

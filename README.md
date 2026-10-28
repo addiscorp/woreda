@@ -38,6 +38,32 @@ Check for problems:
 woreda doctor --human
 ```
 
+## Runners in fresh VMs (mirab)
+
+Each job runs in a new [mirab](https://github.com/addiscorp/mirab) VM that is thrown away afterwards; nothing runs on the host. Describe a runner in a TypeScript file:
+
+```ts
+import { defineRunner } from 'mirab'
+import { github } from 'woreda'
+
+export default defineRunner({
+  name: 'zegadb-arm64',
+  forge: github({ scope: 'zegadb', app: { id: 123, installation: 456, key: 'file:~/.config/woreda/zegadb-app.pem' } }),
+  labels: ['mirab'],
+  image: { tools: { rust: '1.91.0', node: '24' }, packages: ['build-essential'] },
+  vm: { vcpus: 4, memoryMiB: 3072, diskGiB: 30 },
+})
+```
+
+```sh
+woreda image build runners/       # build the runner image once (GitHub's runner, toolsets), cached
+woreda serve runners/             # keep a fresh VM registered and waiting; one job each
+woreda serve runners/ --install   # macOS: keep it running as a LaunchAgent
+woreda status --human             # includes this host's VM pools
+```
+
+The GitHub adapter registers one just-in-time runner per job (labels `self-hosted`, `Linux`, the architecture, plus yours). Its credential is a GitHub App (permission "Self-hosted runners: read & write" on the organisation, or "Administration: read & write" on a repository) or a fine-grained token with that one permission, read from a file each time; only the one-job config ever enters a VM. A folder of definitions needs no `node_modules`: `mirab` and `woreda` resolve to the copies inside woreda. What each job gets, and what phase 1 leaves out (Docker in jobs, more than one VM at a time), is in mirab's [docs/RUNNERS.md](https://github.com/addiscorp/mirab/blob/main/docs/RUNNERS.md).
+
 ## Add a machine that already has runners
 
 ```sh

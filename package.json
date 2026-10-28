@@ -1,9 +1,12 @@
 {
   "name": "woreda",
   "version": "6.0.1",
-  "description": "GitHub Actions self-hosting: set up, monitor and manage runners over SSH.",
+  "description": "Self-hosted CI runners: one job per fresh mirab VM (GitHub first), plus setup, monitoring and management of runners over SSH.",
   "type": "module",
-  "module": "src/woreda.ts",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "bin": {
     "woreda": "src/woreda.ts"
   },
@@ -21,6 +24,7 @@
     "chalk": "6.0.1",
     "commander": "15.0.0",
     "inquirer": "14.2.2",
+    "mirab": "github:addiscorp/mirab#d5d9983b73627eaa98834618a230252906503dc2",
     "zod": "4.6.5"
   },
   "devDependencies": {

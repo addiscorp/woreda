@@ -24,7 +24,7 @@
     "chalk": "6.0.1",
     "commander": "15.0.0",
     "inquirer": "14.2.2",
-    "mirab": "github:addiscorp/mirab#d01ec302fbdd0a62fe6c91fc14429db0d446b897",
+    "mirab": "github:addiscorp/mirab#ac546a7ab46d4439633ad3ec0f4822c3c2d5eb2f",
     "zod": "4.6.5"
   },
   "devDependencies": {

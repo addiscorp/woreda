@@ -124,3 +124,17 @@ describe('woreda login prints for a person', () => {
         expect(text).toContain(`\n    ${c.code}\n`)
     })
 })
+
+describe('woreda login errors', () => {
+    test('a failed login prints a readable error, not JSON, unless --json', async () => {
+        const cli = resolve('src/woreda.ts')
+        const env = { ...process.env, HOME: dir }
+        // No network needed: an unreachable GitHub fails the first request.
+        const run = (args: string[]) => Bun.spawnSync(['bun', cli, ...args], { env: { ...env, HTTPS_PROXY: 'http://127.0.0.1:9' } })
+        const human = run(['login', '--file', join(dir, 'x.json')])
+        expect(human.exitCode).toBe(1)
+        expect(human.stderr.toString().trim().startsWith('{')).toBe(false)
+        const json = run(['--json', 'login', '--file', join(dir, 'x.json')])
+        expect(JSON.parse(json.stderr.toString()).error.code).toBe('operation_failed')
+    })
+})

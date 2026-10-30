@@ -552,10 +552,11 @@ export const program = new Command().name('woreda').version(pkg.version).descrip
     .addHelpText('beforeAll', () => process.stdout.isTTY && !modes().nopretty && !modes().json ? '\n' + logo() + '\n' : '')
     .action(() => program.help())
 
-function action<A extends unknown[]>(run: (...args: A) => Promise<unknown>) {
+/** `humanByDefault`: commands only a person runs (login, logout) print readable errors unless --json. */
+function action<A extends unknown[]>(run: (...args: A) => Promise<unknown>, o: { humanByDefault?: boolean } = {}) {
     return async (...args: A) => {
         try { const value = await run(...args); if (value !== undefined) await output(value) }
-        catch (error) { const message = redact(error instanceof Error ? error.message : String(error)); const options = modes(); await write('stderr', options.human ? message + '\n' : formatJson({ error: { code: 'operation_failed', message } }, { stream: 'stderr', nopretty: options.nopretty })); process.exitCode = 1 }
+        catch (error) { const message = redact(error instanceof Error ? error.message : String(error)); const options = modes(); const human = options.human || (o.humanByDefault === true && !options.json); await write('stderr', human ? message + '\n' : formatJson({ error: { code: 'operation_failed', message } }, { stream: 'stderr', nopretty: options.nopretty })); process.exitCode = 1 }
     }
 }
 function addOptions(command: Command) {
@@ -617,12 +618,12 @@ program.command('login').description('authorize woreda on GitHub (device flow, t
     if (!human) return r
     const until = day(r.refreshExpiresAt)
     await write('stdout', `\nLogged in to GitHub as ${r.user}.${until ? ` woreda keeps the login fresh by itself until ${until}; run woreda login again after that.` : ''}\nSaved in ${r.file}.\n`)
-}))
+}, { humanByDefault: true }))
 program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).action(action(async (options: { file: string }) => {
     const r = await logout(options.file)
     if (!humanUnlessJson()) return r
     await write('stdout', `${r.removed ? 'Logged out: removed' : 'Not logged in: nothing at'} ${r.file}.\nTo revoke the approval on GitHub too: ${hyperlink('https://github.com/settings/apps/authorizations', process.stdout.isTTY)}\n`)
-}))
+}, { humanByDefault: true }))
 program.command('serve').argument('<path>', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running for this user (macOS LaunchAgent)').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string, options: { install?: boolean; mirabConfig: string }) => options.install ? installService(path) : serve(path, options.mirabConfig)))
 program.command('image').description('mirab runner images').command('build').argument('<path>', 'a runner definition (.ts) or a folder of them').description('build (or find cached) each definition\'s runner image').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action((path: string, options: { mirabConfig: string }) => buildImages(path, options.mirabConfig)))
 program.command('jobs').argument('<owner/repo>').description('recent workflow runs and links').option('--limit <count>', 'number of runs', integer('Limit', 1, 100), 5).action(action((scope: string, options: { limit: number }) => jobs(scope, options.limit)))

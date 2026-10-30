@@ -116,6 +116,8 @@ ${args}
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- A stop waits for a running job: serve's grace is 10 minutes (launchd's default is 20 s). -->
+  <key>ExitTimeOut</key><integer>660</integer>
   <key>StandardOutPath</key><string>${esc(logFile)}</string>
   <key>StandardErrorPath</key><string>${esc(logFile)}</string>
 </dict></plist>

@@ -220,6 +220,8 @@ export default defineRunner({ name: 'zeg', forge: github({ scope: 'zegadb', toke
         expect(plist).toContain('<string>serve</string>')
         expect(plist).toContain('<string>/Users/sami/runners &amp; co</string>')
         expect(plist).toContain('<key>KeepAlive</key><true/>')
+        // A restart waits for a running job (serve's 10-minute grace), not launchd's 20 s.
+        expect(plist).toContain('<key>ExitTimeOut</key><integer>660</integer>')
     })
 })
 

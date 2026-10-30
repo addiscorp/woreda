@@ -598,8 +598,29 @@ program.command('update').argument('<runner>').description('verify and install t
 program.command('labels').argument('<runner>').requiredOption('--set <csv>', 'replace custom labels; automatic OS/architecture labels stay').description('manage workflow routing labels').action(action((selector: string, options: { set: string }) => setLabels(selector, options.set)))
 program.command('remove').argument('<runner>').description('stop service and unregister from GitHub; keep files by default').option('--yes', 'confirm removal without prompting').option('--force', 'allow interruption of an active job').option('--purge', 'delete files created by woreda after successful removal').option('--github-only', 'revoke registration only; remote service/files remain').action(action(removeRunner))
 program.command('logs').argument('<runner>').description('stream a selected SDK or job log (plain text)').option('--lines <count>', 'recent lines', integer('Lines', 1, 10000), 60).option('--follow', 'follow appended logs').option('--jobs', 'worker job log instead of runner log').action(action(logs))
-program.command('login').description('authorize woreda on GitHub (device flow, the Woreda GitHub App), for woreda serve').option('--file <path>', 'where to keep the login', defaultLoginFile()).option('--client-id <id>', 'another GitHub App with the device flow', WOREDA_CLIENT_ID).action(action((options: { file: string; clientId: string }) => deviceLogin({ file: options.file, clientId: options.clientId })))
-program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).action(action((options: { file: string }) => logout(options.file)))
+// login and logout are for people at a terminal (an agent never approves a
+// login), so they print readable text unless --json is asked for.
+const humanUnlessJson = () => !modes().json
+/** An OSC 8 hyperlink, so the URL opens with a click/tap even where the terminal wouldn't detect it. */
+export const hyperlink = (url: string, tty = process.stderr.isTTY) => tty ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : url
+/** OSC 52: asks the terminal (across SSH too) to put the text on the clipboard; terminals that don't allow it ignore it. */
+const toClipboard = (text: string) => { if (process.stderr.isTTY) process.stderr.write(`\x1b]52;c;${Buffer.from(text).toString('base64')}\x07`) }
+export function deviceCodeText(c: { uri: string; code: string }, tty = process.stderr.isTTY) {
+    return `\nTo let woreda register runners for you, open\n\n    ${hyperlink(c.uri, tty)}\n\nand enter the code\n\n    ${tty ? chalk.bold(c.code) : c.code}${tty ? '   (sent to your clipboard, if your terminal allows it)' : ''}\n\nWaiting for you to approve it on GitHub…`
+}
+const day = (iso: string | null) => iso ? new Date(iso).toLocaleDateString('en-CA', { dateStyle: 'medium' }) : null
+program.command('login').description('authorize woreda on GitHub (device flow, the Woreda GitHub App), for woreda serve').option('--file <path>', 'where to keep the login', defaultLoginFile()).option('--client-id <id>', 'another GitHub App with the device flow', WOREDA_CLIENT_ID).action(action(async (options: { file: string; clientId: string }) => {
+    const human = humanUnlessJson()
+    const r = await deviceLogin({ file: options.file, clientId: options.clientId, show: c => { if (human) { toClipboard(c.code); console.error(deviceCodeText(c)) } else console.error(`Open ${c.uri} and enter: ${c.code}`) } })
+    if (!human) return r
+    const until = day(r.refreshExpiresAt)
+    await write('stdout', `\nLogged in to GitHub as ${r.user}.${until ? ` woreda keeps the login fresh by itself until ${until}; run woreda login again after that.` : ''}\nSaved in ${r.file}.\n`)
+}))
+program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).action(action(async (options: { file: string }) => {
+    const r = await logout(options.file)
+    if (!humanUnlessJson()) return r
+    await write('stdout', `${r.removed ? 'Logged out: removed' : 'Not logged in: nothing at'} ${r.file}.\nTo revoke the approval on GitHub too: ${hyperlink('https://github.com/settings/apps/authorizations', process.stdout.isTTY)}\n`)
+}))
 program.command('serve').argument('<path>', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running for this user (macOS LaunchAgent)').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string, options: { install?: boolean; mirabConfig: string }) => options.install ? installService(path) : serve(path, options.mirabConfig)))
 program.command('image').description('mirab runner images').command('build').argument('<path>', 'a runner definition (.ts) or a folder of them').description('build (or find cached) each definition\'s runner image').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action((path: string, options: { mirabConfig: string }) => buildImages(path, options.mirabConfig)))
 program.command('jobs').argument('<owner/repo>').description('recent workflow runs and links').option('--limit <count>', 'number of runs', integer('Limit', 1, 100), 5).action(action((scope: string, options: { limit: number }) => jobs(scope, options.limit)))

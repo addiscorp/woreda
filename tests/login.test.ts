@@ -40,9 +40,9 @@ describe('woreda login (device flow)', () => {
             ],
             '/user': [{ login: 'samifouad' }],
         })
-        const said: string[] = [], slept: number[] = []
-        const r = await deviceLogin({ file, fetcher: gh.fetcher, say: l => void said.push(l), sleep: async ms => void slept.push(ms), now: () => 1_000_000 })
-        expect(said).toEqual(['Open https://github.com/login/device and enter: WDJB-MJHT'])
+        const shown: unknown[] = [], slept: number[] = []
+        const r = await deviceLogin({ file, fetcher: gh.fetcher, show: c => void shown.push(c), sleep: async ms => void slept.push(ms), now: () => 1_000_000 })
+        expect(shown).toEqual([{ uri: 'https://github.com/login/device', code: 'WDJB-MJHT' }])
         expect(slept).toEqual([5000, 5000, 10000])
         expect(r.user).toBe('samifouad')
         expect(gh.calls[0]!.fields).toEqual({ client_id: WOREDA_CLIENT_ID })
@@ -56,7 +56,7 @@ describe('woreda login (device flow)', () => {
     test('a declined request is an error, and nothing is stored', async () => {
         const file = join(dir, 'declined.json')
         const gh = fakeGithub({ '/login/device/code': [device], '/login/oauth/access_token': [{ error: 'access_denied' }] })
-        await expect(deviceLogin({ file, fetcher: gh.fetcher, say: () => {}, sleep: async () => {} })).rejects.toThrow(/declined/)
+        await expect(deviceLogin({ file, fetcher: gh.fetcher, show: () => {}, sleep: async () => {} })).rejects.toThrow(/declined/)
         expect(await loadLogin(file)).toBeUndefined()
     })
 
@@ -104,5 +104,23 @@ describe('woreda login (device flow)', () => {
         await writeFile(file, '{}')
         expect((await logout(file)).removed).toBe(true)
         await expect(readFile(file)).rejects.toThrow()
+    })
+})
+
+describe('woreda login prints for a person', () => {
+    const c = { uri: 'https://github.com/login/device', code: '10F9-0334' }
+    test('in a terminal the URL is an OSC 8 hyperlink on its own line, so it opens with a tap', async () => {
+        const { deviceCodeText } = await import('../src/woreda.ts')
+        const text = deviceCodeText(c, true)
+        expect(text).toContain(`\n    \x1b]8;;${c.uri}\x1b\\${c.uri}\x1b]8;;\x1b\\\n`)
+        expect(text).toContain(c.code)
+        expect(text).not.toContain('{')
+    })
+    test('piped, the text carries no escape codes', async () => {
+        const { deviceCodeText } = await import('../src/woreda.ts')
+        const text = deviceCodeText(c, false)
+        expect(text).not.toContain('\x1b')
+        expect(text).toContain(`\n    ${c.uri}\n`)
+        expect(text).toContain(`\n    ${c.code}\n`)
     })
 })

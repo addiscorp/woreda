@@ -45,12 +45,12 @@ export async function loadLogin(file = defaultLoginFile()): Promise<StoredLogin 
     try { return JSON.parse(await readFile(file, 'utf8')) as StoredLogin } catch { return undefined }
 }
 
-/** The device flow: prints a code to enter at github.com/login/device, waits for approval, stores the tokens. */
-export async function deviceLogin(o: { clientId?: string; file?: string; say?: (line: string) => void; fetcher?: Fetch; sleep?: (ms: number) => Promise<void>; now?: () => number } = {}) {
+/** The device flow: shows a code to enter at github.com/login/device, waits for approval, stores the tokens. */
+export async function deviceLogin(o: { clientId?: string; file?: string; show?: (code: { uri: string; code: string }) => void; fetcher?: Fetch; sleep?: (ms: number) => Promise<void>; now?: () => number } = {}) {
     const clientId = o.clientId ?? WOREDA_CLIENT_ID, file = o.file ?? defaultLoginFile(), fetcher = o.fetcher ?? fetch
-    const say = o.say ?? (line => console.error(line)), sleep = o.sleep ?? (ms => Bun.sleep(ms)), now = o.now ?? Date.now
+    const show = o.show ?? (c => console.error(`Open ${c.uri} and enter: ${c.code}`)), sleep = o.sleep ?? (ms => Bun.sleep(ms)), now = o.now ?? Date.now
     const code = await form<{ device_code: string; user_code: string; verification_uri: string; expires_in: number; interval: number }>(fetcher, `${GITHUB}/login/device/code`, { client_id: clientId })
-    say(`Open ${code.verification_uri} and enter: ${code.user_code}`)
+    show({ uri: code.verification_uri, code: code.user_code })
     const deadline = now() + code.expires_in * 1000
     let interval = (code.interval || 5) * 1000
     for (;;) {

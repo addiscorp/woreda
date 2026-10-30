@@ -212,3 +212,15 @@ test('the VM image is the canary of the mirab commit woreda pins', () => {
     expect(mirabRelease('^0.3.0', '0.3.0')).toBeUndefined()
     expect(mirabRelease()).toMatch(/^\d+\.\d+\.\d+-canary-[0-9a-f]{7}$/)
 })
+
+describe('host.json (what a host lends runner VMs)', () => {
+    test('read from the definitions folder; absent means the defaults; a bad value names the file', async () => {
+        const { loadHostConfig } = await import('../src/runners.ts')
+        const d = await mkdtemp(join(dir, 'host-'))
+        expect(await loadHostConfig(d)).toEqual({})
+        await writeFile(join(d, 'host.json'), JSON.stringify({ vmMemoryMiB: 4096, vmVcpus: 4 }))
+        expect(await loadHostConfig(d)).toEqual({ vmMemoryMiB: 4096, vmVcpus: 4 })
+        await writeFile(join(d, 'host.json'), JSON.stringify({ vmMemoryMiB: 512 }))
+        await expect(loadHostConfig(d)).rejects.toThrow(/host\.json: vmMemoryMiB/)
+    })
+})

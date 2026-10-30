@@ -3,7 +3,8 @@ import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as mirab from 'mirab'
-import { MIRAB_VERSION, runnerHostVm, runnerImage, runnerRecipe, runnersDir, serveRunners, type RunnerDefinition, type RunnerState } from 'mirab/runner'
+import { MIRAB_VERSION, runnerHostVm, runnerImage, runnerRecipe, runnersDir, serveRunners, type BudgetSnapshot, type RunnerDefinition, type RunnerState } from 'mirab/runner'
+import { z } from 'zod'
 import pkg from '../package.json'
 import * as woreda from './index.ts'
 
@@ -59,12 +60,34 @@ export async function buildImages(path: string, configDir = defaultMirabConfig()
 }
 
 /** Serves until SIGINT/SIGTERM: busy jobs get their grace period, waiting slots stop at once. */
+/** `<definitions>/host.json`: what this host lends runner VMs in all; the
+ *  rest stays with the host. Absent: host RAM − 3 GiB and every CPU. */
+export const hostConfigSchema = z.strictObject({
+    vmMemoryMiB: z.number().int().min(1024).optional(),
+    vmVcpus: z.number().int().min(1).optional(),
+})
+export type HostConfig = z.infer<typeof hostConfigSchema>
+
+export async function loadHostConfig(path: string): Promise<HostConfig> {
+    let text: string
+    try { text = await readFile(join(resolve(path), 'host.json'), 'utf8') } catch { return {} }
+    const parsed = hostConfigSchema.safeParse(JSON.parse(text))
+    if (!parsed.success) throw new Error(`${join(path, 'host.json')}: ${parsed.error.issues.map(i => `${i.path.join('.') || 'host'}: ${i.message}`).join('; ')}`)
+    return parsed.data
+}
+
 export async function serve(path: string, configDir = defaultMirabConfig(), log: (line: string) => void = line => console.error(line)) {
     const defs = await loadDefinitions(path)
+    const host = await loadHostConfig(path)
     const vm = await runnerHostVm(configDir, log, mirabRelease())
     const stop = new AbortController()
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { log(`${signal}: stopping`); stop.abort() })
-    await serveRunners(defs, { configDir, vm, signal: stop.signal, log })
+    await serveRunners(defs, { configDir, vm, signal: stop.signal, log, budgetMiB: host.vmMemoryMiB, budgetVcpus: host.vmVcpus })
+}
+
+/** This host's runner budget as serve last wrote it: what's lent, held and waiting. */
+export async function hostBudget(configDir = defaultMirabConfig()): Promise<BudgetSnapshot | undefined> {
+    try { return JSON.parse(await readFile(join(runnersDir(configDir), 'host.json'), 'utf8')) } catch { return undefined }
 }
 
 /** What each runner on this host is doing, from mirab's state files. */

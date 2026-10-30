@@ -65,6 +65,22 @@ woreda status --human             # includes this host's VM pools
 
 The GitHub adapter registers one just-in-time runner per job (labels `self-hosted`, `Linux`, the architecture, plus yours). Its credential is `woreda login`: install the [Woreda GitHub App](https://github.com/apps/woreda-workflow-runners) on the organisation, then approve the code `woreda login` shows. The token acts as you, limited to the App's one permission (organisation self-hosted runners), and refreshes itself; it is kept in `~/.config/woreda/github-login.json` (0600). Instead, a definition can name your own GitHub App (permission "Self-hosted runners: read & write" on the organisation, or "Administration: read & write" on a repository) or a fine-grained token with that one permission, read from a file each time; only the one-job config ever enters a VM. A folder of definitions needs no `node_modules`: `mirab` and `woreda` resolve to the copies inside woreda. What each job gets, and what phase 1 leaves out (Docker in jobs, more than one VM at a time), is in mirab's [docs/RUNNERS.md](https://github.com/addiscorp/mirab/blob/main/docs/RUNNERS.md).
 
+### Sharing a host: budget and on-demand pools
+
+Each host folder may hold a `host.json` saying what runner VMs may use in all;
+the rest stays with the host:
+
+```json
+{ "vmMemoryMiB": 4096, "vmVcpus": 4 }
+```
+
+How many VMs run at once follows from each definition's `vm.memoryMiB`: 4096
+MiB runs two 2 GiB VMs or four 1 GiB ones. With `pool: { warm: 0 }` a pool
+boots a VM only when GitHub has a queued job it can take, so one host serves
+many organisations; VMs get the budget first come, first served. Seeing queued
+jobs needs the GitHub App's "Actions: read" permission. `woreda status` shows
+the budget, what holds it and what waits.
+
 ## Add a machine that already has runners
 
 ```sh

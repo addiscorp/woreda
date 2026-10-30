@@ -9,8 +9,8 @@ import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import pkg from '../package.json'
-import type { RunnerState } from 'mirab/runner'
-import { buildImages, defaultMirabConfig, installService, pools, serve } from './runners.ts'
+import type { BudgetSnapshot, RunnerState } from 'mirab/runner'
+import { buildImages, defaultMirabConfig, hostBudget, installService, pools, serve } from './runners.ts'
 import { WOREDA_CLIENT_ID, defaultLoginFile, deviceLogin, logout } from './forges/github-login.ts'
 
 const identifier = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/)
@@ -529,7 +529,9 @@ export function table(data: Snapshot) {
     const columns = [['RUNNER', 'MACHINE', 'STATE', 'SERVICE', 'TARGET LABELS'], ...data.runners.map(row => [row.selector, row.host ?? 'unmanaged', row.status, row.service?.pid ? `PID ${row.service.pid}` : row.service?.state ?? 'unmanaged', row.labels.filter(label => !['self-hosted', 'macOS', 'Linux', 'ARM64', 'X64'].includes(label)).join(', ')])]
     const widths = Array.from({ length: 4 }, (_, i) => Math.max(...columns.map(row => (row[i] ?? '').length)))
     const pools = (data as Snapshot & { pools?: RunnerState[] }).pools ?? []
-    const poolLines = pools.length ? '\nVM POOLS (mirab)\n' + pools.map(p => `${p.name}  ${p.forge}  ${p.slots.map(slot => `${slot.vmName} ${slot.phase}`).join(', ') || 'no slot'}  jobs ${p.jobs}${p.lastError ? `  last error: ${p.lastError.message}` : ''}`).join('\n') + '\n' : ''
+    const budget = (data as Snapshot & { budget?: BudgetSnapshot | null }).budget
+    const budgetLine = budget ? `budget  ${budget.usedMemoryMiB}/${budget.memoryMiB} MiB, ${budget.usedVcpus}/${budget.vcpus} vCPUs${budget.queue.length ? `  waiting: ${budget.queue.map(q => q.by).join(', ')}` : ''}\n` : ''
+    const poolLines = pools.length ? '\nVM POOLS (mirab)\n' + budgetLine + pools.map(p => `${p.name}  ${p.forge}  ${p.slots.map(slot => `${slot.vmName} ${slot.phase}`).join(', ') || 'no slot'}  jobs ${p.jobs}${p.lastError ? `  last error: ${p.lastError.message}` : ''}`).join('\n') + '\n' : ''
     return columns.map(row => row.map((cell, index) => index < 4 ? cell.padEnd(widths[index]!) : cell).join('  ')).join('\n') + '\n' + poolLines + data.errors.map(error => `${error.target}: ${error.message}`).join('\n')
 }
 function integer(name: string, min: number, max: number) {
@@ -578,7 +580,7 @@ hosts.command('remove').argument('<name>').option('--yes', 'confirm configuratio
     await confirmRemoval(`Forget machine ${name}?`, options.yes)
     delete settings.hosts[name]; await saveSettings(settings); return { name, removed: true }
 }))
-program.command('status').description('join GitHub state and actual SSH service health, and this host\'s mirab runner pools').action(action(async () => ({ ...(await snapshot(await loadSettings())), pools: await pools() })))
+program.command('status').description('join GitHub state and actual SSH service health, and this host\'s mirab runner pools').action(action(async () => ({ ...(await snapshot(await loadSettings())), pools: await pools(), budget: (await hostBudget()) ?? null })))
 program.command('doctor').description('check runner health; nonzero exit if managed runners are unhealthy').action(action(async () => {
     const data = await snapshot(await loadSettings())
     if (data.errors.length || data.runners.some(row => row.host && !['idle', 'busy'].includes(row.status))) process.exitCode = 1

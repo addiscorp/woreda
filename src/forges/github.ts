@@ -64,12 +64,35 @@ export function appJwt(appId: number, privateKey: string, now = Date.now()): str
 
 export type Fetch = typeof fetch
 
+/** The labels a GitHub runner carries: GitHub's own (self-hosted, OS, arch)
+ *  and mirab's. One function, so a registration and the queued-jobs count
+ *  can't disagree about which jobs a runner takes. */
+export function githubLabels(labels: string[], platform: RunnerPlatform): string[] {
+    return [...new Set(['self-hosted', 'Linux', platform === 'linux-arm64' ? 'ARM64' : 'X64', ...labels])]
+}
+
+/** A job GitHub would give a runner with `labels`: every label it asks for is
+ *  one the runner has (GitHub compares labels without case). */
+export function takes(labels: string[], wants: string[]): boolean {
+    const have = new Set(labels.map((l) => l.toLowerCase()))
+    return wants.length > 0 && wants.every((w) => have.has(w.toLowerCase()))
+}
+
+/** Repositories pushed to this recently are asked about every poll; the rest
+ *  only when the repository list is refreshed. */
+const ACTIVE_MS = 14 * 24 * 3600_000
+const REPOS_REFRESH_MS = 10 * 60_000
+
 export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
     const o = githubOptionsSchema.parse(input)
     if ([o.app, o.token, o.login].filter(Boolean).length !== 1) throw new Error('github(): give exactly one of app, token or login')
     const repo = o.scope.includes('/')
     const base = repo ? `${o.api}/repos/${o.scope}` : `${o.api}/orgs/${o.scope}`
     let cached: { token: string; until: number } | undefined
+    // Conditional GETs: GitHub answers 304 when nothing changed, and a 304
+    // doesn't count against the rate limit, so polling queued jobs is cheap.
+    const etags = new Map<string, { etag: string; body: unknown }>()
+    let repos: { all: string[]; active: string[]; at: number } | undefined
 
     async function call<T>(method: string, url: string, token: string | null, body?: unknown): Promise<T> {
         const res = await fetcher(url, {
@@ -93,6 +116,52 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
         return (res.status === 204 ? undefined : await res.json()) as T
     }
 
+    async function cachedGet<T>(url: string, t: string): Promise<T> {
+        const prior = etags.get(url)
+        const res = await fetcher(url, {
+            headers: {
+                accept: 'application/vnd.github+json',
+                'x-github-api-version': '2022-11-28',
+                'user-agent': 'woreda',
+                authorization: `Bearer ${t}`,
+                ...(prior ? { 'if-none-match': prior.etag } : {}),
+            },
+            signal: AbortSignal.timeout(30_000),
+        })
+        if (res.status === 304 && prior) return prior.body as T
+        if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            const hint = res.status === 403 || res.status === 404 ? ' (the GitHub App needs "Actions: read" to see queued jobs)' : ''
+            throw new Error(`GitHub GET ${new URL(url).pathname}: ${res.status}${hint} ${text.slice(0, 120)}`)
+        }
+        const body = (await res.json()) as T
+        const etag = res.headers.get('etag')
+        if (etag) etags.set(url, { etag, body })
+        return body
+    }
+
+    /** The repositories to look at this poll. */
+    async function reposToAsk(t: string): Promise<string[]> {
+        if (repo) return [o.scope]
+        const now = Date.now()
+        if (repos && now - repos.at < REPOS_REFRESH_MS) return repos.active
+        const all: { full_name: string; pushed_at: string | null; archived: boolean }[] = []
+        // 100 per page, at most 10 pages (1,000 repositories).
+        for (let page = 1; page <= 10; page++) {
+            const r = await cachedGet<typeof all>(`${o.api}/orgs/${o.scope}/repos?type=all&sort=pushed&per_page=100&page=${page}`, t)
+            all.push(...r)
+            if (r.length < 100) break
+        }
+        const live = all.filter((r) => !r.archived)
+        repos = {
+            all: live.map((r) => r.full_name),
+            active: live.filter((r) => r.pushed_at && now - Date.parse(r.pushed_at) < ACTIVE_MS).map((r) => r.full_name),
+            at: now,
+        }
+        // This poll is the refresh: ask every repository once.
+        return repos.all
+    }
+
     async function token(): Promise<string> {
         if (o.token) return readRef(o.token)
         if (o.login) return loginToken({ file: o.login === true ? undefined : expand(o.login.file), fetcher })
@@ -111,7 +180,6 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
     return {
         name: 'github',
         async ticket({ name, labels, platform }) {
-            const arch = platform === 'linux-arm64' ? 'ARM64' : 'X64'
             const r = await call<{ encoded_jit_config: string; runner: { id: number } }>(
                 'POST',
                 `${base}/actions/runners/generate-jitconfig`,
@@ -119,7 +187,7 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                 {
                     name,
                     runner_group_id: o.runnerGroup,
-                    labels: [...new Set(['self-hosted', 'Linux', arch, ...labels])],
+                    labels: githubLabels(labels, platform),
                     work_folder: '_work',
                 },
             )
@@ -180,6 +248,33 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                 }
             },
             started: (line) => /Running job: /.test(line),
+        },
+        /** Queued jobs, in the scope's recently pushed repositories, that a
+         *  runner with these labels would be given. Workflow runs still
+         *  queued, and running ones with jobs waiting, both count. */
+        async queued({ labels, platform }) {
+            const t = await token()
+            const mine = githubLabels(labels, platform)
+            let n = 0
+            const ask = async (full: string) => {
+                for (const status of ['queued', 'in_progress']) {
+                    const runs = await cachedGet<{ workflow_runs: { id: number }[] }>(
+                        `${o.api}/repos/${full}/actions/runs?status=${status}&per_page=50`,
+                        t,
+                    )
+                    for (const run of runs.workflow_runs) {
+                        const jobs = await cachedGet<{ jobs: { status: string; labels: string[] }[] }>(
+                            `${o.api}/repos/${full}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
+                            t,
+                        )
+                        n += jobs.jobs.filter((j) => j.status === 'queued' && takes(mine, j.labels)).length
+                    }
+                }
+            }
+            const list = await reposToAsk(t)
+            // A few at a time: kind to the API, quick enough for a 15 s poll.
+            for (let i = 0; i < list.length; i += 6) await Promise.all(list.slice(i, i + 6).map(ask))
+            return n
         },
         async reconcile(prefix, live) {
             const t = await token()

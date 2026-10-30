@@ -113,6 +113,76 @@ describe('the GitHub forge adapter', () => {
     })
 })
 
+describe('queued jobs (for on-demand pools)', () => {
+    /** An org with three repositories, answering 304 to a matching If-None-Match. */
+    function org() {
+        const day = 24 * 3600_000
+        const routes: Record<string, unknown> = {
+            '/orgs/zegadb/repos': [
+                { full_name: 'zegadb/zega', pushed_at: new Date(Date.now() - day).toISOString(), archived: false },
+                { full_name: 'zegadb/old', pushed_at: new Date(Date.now() - 60 * day).toISOString(), archived: false },
+                { full_name: 'zegadb/attic', pushed_at: new Date().toISOString(), archived: true },
+            ],
+            '/repos/zegadb/zega/actions/runs?status=queued': { workflow_runs: [{ id: 1 }] },
+            '/repos/zegadb/zega/actions/runs?status=in_progress': { workflow_runs: [{ id: 2 }] },
+            '/repos/zegadb/zega/actions/runs/1/jobs': { jobs: [
+                { status: 'queued', labels: ['mirab-linux-arm64'] },
+                { status: 'queued', labels: ['ubuntu-latest'] },
+                { status: 'in_progress', labels: ['mirab-linux-arm64'] },
+            ] },
+            // A later job of a running workflow, asking in other case.
+            '/repos/zegadb/zega/actions/runs/2/jobs': { jobs: [{ status: 'queued', labels: ['self-hosted', 'linux', 'arm64'] }] },
+            '/repos/zegadb/old/actions/runs?status=queued': { workflow_runs: [{ id: 3 }] },
+            '/repos/zegadb/old/actions/runs?status=in_progress': { workflow_runs: [] },
+            '/repos/zegadb/old/actions/runs/3/jobs': { jobs: [{ status: 'queued', labels: ['mirab-linux-arm64'] }] },
+            // x64 only: not for an arm64 runner.
+            '/repos/zegadb/attic/actions/runs?status=queued': { workflow_runs: [] },
+        }
+        const calls: { path: string; ifNoneMatch?: string; status: number }[] = []
+        const fetcher = (async (url: string, init: RequestInit) => {
+            const u = new URL(url)
+            const status = u.searchParams.get('status')
+            const path = u.pathname + (status ? `?status=${status}` : '')
+            const headers = init.headers as Record<string, string>
+            const etag = `"${path}"`
+            const body = routes[path]
+            if (body === undefined) { calls.push({ path, status: 404 }); return new Response('{}', { status: 404 }) }
+            if (headers['if-none-match'] === etag) { calls.push({ path, ifNoneMatch: etag, status: 304 }); return new Response(null, { status: 304 }) }
+            calls.push({ path, status: 200 })
+            return new Response(JSON.stringify(body), { status: 200, headers: { etag } })
+        }) as unknown as typeof fetch
+        return { calls, fetcher }
+    }
+
+    test('counts queued jobs whose labels the runner has (any case), in queued and running workflows; skips archived repos', async () => {
+        const api = org()
+        const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` }, api.fetcher)
+        // First poll refreshes the repository list and asks every live repository.
+        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(3)
+        expect(api.calls.some((c) => c.path.startsWith('/repos/zegadb/attic'))).toBe(false)
+        // An x64 runner takes none of them.
+        expect(await forge.queued!({ labels: ['mirab-linux-x64'], platform: 'linux-x64' })).toBe(0)
+    })
+
+    test('later polls ask only recently pushed repositories, with If-None-Match, and a 304 keeps the last answer', async () => {
+        const api = org()
+        const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` }, api.fetcher)
+        await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })
+        const first = api.calls.length
+        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(2)
+        const second = api.calls.slice(first)
+        expect(second.some((c) => c.path.startsWith('/repos/zegadb/old'))).toBe(false)
+        expect(second.length).toBeGreaterThan(0)
+        expect(second.every((c) => c.status === 304 && c.ifNoneMatch)).toBe(true)
+    })
+
+    test('without "Actions: read" the error says so', async () => {
+        const forge = github({ scope: 'addiscorp/runner-smoke', token: `file:${join(dir, 'token')}` },
+            (async () => new Response('{"message":"Resource not accessible by integration"}', { status: 403 })) as unknown as typeof fetch)
+        await expect(forge.queued!({ labels: [], platform: 'linux-arm64' })).rejects.toThrow(/needs "Actions: read"/)
+    })
+})
+
 describe('runner definitions', () => {
     test('a folder of definitions imports mirab and woreda without node_modules of its own', async () => {
         const defs = join(dir, 'defs')

@@ -134,7 +134,15 @@ export async function installService(path: string) {
     await writeFile(plist, launchAgentPlist(program, path, join(logs, 'woreda-serve.log')))
     const domain = `gui/${process.getuid!()}`
     await Bun.spawn(['launchctl', 'bootout', `${domain}/${LAUNCH_AGENT}`], { stderr: 'ignore' }).exited
-    const code = await Bun.spawn(['launchctl', 'bootstrap', domain, plist]).exited
+    // bootout returns before launchd has let go of the old service (which may
+    // still be finishing a job, up to ExitTimeOut); bootstrap fails with 5
+    // until then. Wait for it, a little past the job grace.
+    let code = 0
+    for (let tries = 0; tries < 700; tries++) {
+        code = await Bun.spawn(['launchctl', 'bootstrap', domain, plist], { stderr: tries ? 'ignore' : 'inherit' }).exited
+        if (code !== 5) break
+        await Bun.sleep(1000)
+    }
     if (code !== 0) throw Error(`launchctl bootstrap ${domain} ${plist} failed (${code})`)
     return { installed: true, plist, log: join(logs, 'woreda-serve.log'), stop: `launchctl bootout ${domain}/${LAUNCH_AGENT}` }
 }

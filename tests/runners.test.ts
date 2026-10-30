@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { appJwt, github, releaseSha } from '../src/forges/github.ts'
+import { appJwt, github, githubLabels, releaseSha } from '../src/forges/github.ts'
 import { launchAgentPlist, loadDefinitions, mirabRelease } from '../src/runners.ts'
 
 let dir: string
@@ -81,7 +81,7 @@ describe('the GitHub forge adapter', () => {
 
     test('the one-job config travels as a root-only tmpfs file, read into env, never argv', () => {
         const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` })
-        const job = forge.guest.job({ name: 'a', secret: { jit: 'JIT-BLOB-SECRET' } })
+        const job = forge.guest.job({ name: 'a', secret: { jit: 'JIT-BLOB-SECRET' } }, 'linux-arm64')
         expect(job.files).toEqual([{ path: '/run/mirab/jit', mode: 0o600, content: 'JIT-BLOB-SECRET', secret: true }])
         const step = job.steps[0]!
         expect(step.asRoot).toBe(true)
@@ -91,6 +91,22 @@ describe('the GitHub forge adapter', () => {
         expect(sh).toContain('exec setpriv --reuid=1001 --regid=1001 --init-groups ./run.sh')
         expect(forge.guest.started('2026-10-28 08:00:00Z: Running job: build')).toBe(true)
         expect(forge.guest.started('Listening for Jobs')).toBe(false)
+    })
+
+    test('macOS: the osx-arm64 runner, checked with shasum and no Linux dependency script; the job drops with sudo -E and keeps its secret off /run', async () => {
+        const body = `<!-- BEGIN SHA osx-arm64 -->${SHA}<!-- END SHA osx-arm64 -->`
+        const api = fakeApi(() => ({ json: { tag_name: 'v2.338.2', body } }))
+        const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` }, api.fetcher)
+        const install = await forge.guest.install('darwin-arm64')
+        const script = install.steps[0]!.argv.join(' ')
+        expect(script).toContain('actions-runner-osx-arm64-2.338.2.tar.gz')
+        expect(script).toContain(`echo '${SHA}  /opt/actions-runner/runner.tar.gz' | shasum -a 256 -c -`)
+        expect(script).not.toContain('installdependencies.sh')
+        const job = forge.guest.job({ name: 'a', secret: { jit: 'JIT' } }, 'darwin-arm64')
+        expect(job.files[0]!.path).toBe('/private/var/run/mirab/jit')
+        expect(job.steps[0]!.argv[2]).toContain('exec /usr/bin/sudo -E -H -u runner -- ./run.sh')
+        expect(job.steps[0]!.argv[2]).not.toContain('setpriv')
+        expect(githubLabels(['mirab-darwin-arm64'], 'darwin-arm64')).toEqual(['self-hosted', 'macOS', 'ARM64', 'mirab-darwin-arm64'])
     })
 
     test('reconcile deletes only this host\'s stale registrations, across pages, and skips busy ones', async () => {

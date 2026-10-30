@@ -4,7 +4,7 @@
 import { createSign } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { RUNNER_SETPRIV, type Forge, type RunnerPlatform } from 'mirab'
+import { dropToRunner, isDarwin, secretDir, type Forge, type RunnerPlatform } from 'mirab'
 import { loginToken } from './github-login.ts'
 import { z } from 'zod'
 
@@ -37,16 +37,20 @@ export const githubOptionsSchema = z.strictObject({
 export type GithubOptions = z.input<typeof githubOptionsSchema>
 
 const RUNNER_DIR = '/opt/actions-runner'
-const JIT_FILE = '/run/mirab/jit'
+const jitFile = (p: RunnerPlatform) => `${secretDir(p)}/jit`
+
+/** GitHub's name for a platform in runner release assets. */
+export const runnerAsset = (p: RunnerPlatform) => (p === 'darwin-arm64' ? 'osx-arm64' : p)
 
 /** The SHA-256 GitHub publishes for one platform in a runner release's notes. */
 export function releaseSha(body: string, platform: RunnerPlatform): string | undefined {
-    const m = new RegExp(`BEGIN SHA ${platform} -->\\s*([0-9a-f]{64})\\s*<!-- END SHA ${platform}`).exec(body)
+    const a = runnerAsset(platform)
+    const m = new RegExp(`BEGIN SHA ${a} -->\\s*([0-9a-f]{64})\\s*<!-- END SHA ${a}`).exec(body)
     return m?.[1]
 }
 
 export const runnerTarball = (version: string, platform: RunnerPlatform) =>
-    `https://github.com/actions/runner/releases/download/v${version}/actions-runner-${platform}-${version}.tar.gz`
+    `https://github.com/actions/runner/releases/download/v${version}/actions-runner-${runnerAsset(platform)}-${version}.tar.gz`
 
 const expand = (path: string) => (path.startsWith('~/') ? homedir() + path.slice(1) : path)
 const readRef = async (ref: string) => (await readFile(expand(ref.slice('file:'.length)), 'utf8')).trim()
@@ -68,7 +72,8 @@ export type Fetch = typeof fetch
  *  and mirab's. One function, so a registration and the queued-jobs count
  *  can't disagree about which jobs a runner takes. */
 export function githubLabels(labels: string[], platform: RunnerPlatform): string[] {
-    return [...new Set(['self-hosted', 'Linux', platform === 'linux-arm64' ? 'ARM64' : 'X64', ...labels])]
+    const os = isDarwin(platform) ? 'macOS' : 'Linux'
+    return [...new Set(['self-hosted', os, platform.endsWith('-arm64') ? 'ARM64' : 'X64', ...labels])]
 }
 
 /** A job GitHub would give a runner with `labels`: every label it asks for is
@@ -216,10 +221,11 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                                 [
                                     `mkdir -p ${RUNNER_DIR}`,
                                     `curl -fsSL -o ${tarball} '${runnerTarball(version, platform)}'`,
-                                    `echo '${sha}  ${tarball}' | sha256sum -c -`,
+                                    `echo '${sha}  ${tarball}' | ${isDarwin(platform) ? 'shasum -a 256' : 'sha256sum'} -c -`,
                                     `tar -xzf ${tarball} -C ${RUNNER_DIR}`,
                                     `rm -f ${tarball}`,
-                                    `${RUNNER_DIR}/bin/installdependencies.sh`,
+                                    // Linux only: the runner's libraries (macOS has them).
+                                    isDarwin(platform) ? 'true' : `${RUNNER_DIR}/bin/installdependencies.sh`,
                                     // The runner may update itself in place; let it.
                                     `chown -R 1001:1001 ${RUNNER_DIR}`,
                                 ].join(' && '),
@@ -229,7 +235,8 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                 }
             },
             buildEgress: ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'],
-            job(ticket) {
+            job(ticket, platform) {
+                const JIT_FILE = jitFile(platform)
                 return {
                     // The one-job config: a root-only file on tmpfs, read into the
                     // runner's env and removed before the runner starts, never argv.
@@ -240,7 +247,7 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                             argv: [
                                 'sh',
                                 '-c',
-                                `ACTIONS_RUNNER_INPUT_JITCONFIG=$(cat ${JIT_FILE}); export ACTIONS_RUNNER_INPUT_JITCONFIG; rm -f ${JIT_FILE}; cd ${RUNNER_DIR}; exec ${RUNNER_SETPRIV.join(' ')} ./run.sh`,
+                                `ACTIONS_RUNNER_INPUT_JITCONFIG=$(cat ${JIT_FILE}); export ACTIONS_RUNNER_INPUT_JITCONFIG; rm -f ${JIT_FILE}; cd ${RUNNER_DIR}; exec ${dropToRunner(platform).join(' ')} ./run.sh`,
                             ],
                         },
                     ],

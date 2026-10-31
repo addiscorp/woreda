@@ -9,6 +9,9 @@ import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import pkg from '../package.json'
+import type { BudgetSnapshot, RunnerState } from 'mirab/runner'
+import { buildImages, defaultMirabConfig, hostBudget, installService, pools, serve } from './runners.ts'
+import { WOREDA_CLIENT_ID, defaultLoginFile, deviceLogin, logout } from './forges/github-login.ts'
 
 const identifier = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/)
 const scopeSchema = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/)
@@ -525,7 +528,11 @@ async function output(value: unknown, event = false) {
 export function table(data: Snapshot) {
     const columns = [['RUNNER', 'MACHINE', 'STATE', 'SERVICE', 'TARGET LABELS'], ...data.runners.map(row => [row.selector, row.host ?? 'unmanaged', row.status, row.service?.pid ? `PID ${row.service.pid}` : row.service?.state ?? 'unmanaged', row.labels.filter(label => !['self-hosted', 'macOS', 'Linux', 'ARM64', 'X64'].includes(label)).join(', ')])]
     const widths = Array.from({ length: 4 }, (_, i) => Math.max(...columns.map(row => (row[i] ?? '').length)))
-    return columns.map(row => row.map((cell, index) => index < 4 ? cell.padEnd(widths[index]!) : cell).join('  ')).join('\n') + '\n' + data.errors.map(error => `${error.target}: ${error.message}`).join('\n')
+    const pools = (data as Snapshot & { pools?: RunnerState[] }).pools ?? []
+    const budget = (data as Snapshot & { budget?: BudgetSnapshot | null }).budget
+    const budgetLine = budget ? `budget  ${budget.usedMemoryMiB}/${budget.memoryMiB} MiB, ${budget.usedVcpus}/${budget.vcpus} vCPUs${budget.queue.length ? `  waiting: ${budget.queue.map(q => q.by).join(', ')}` : ''}\n` : ''
+    const poolLines = pools.length ? '\nVM POOLS (mirab)\n' + budgetLine + pools.map(p => `${p.name}  ${p.forge}  ${p.slots.map(slot => `${slot.vmName} ${slot.phase}`).join(', ') || 'no slot'}  jobs ${p.jobs}${p.lastError ? `  last error: ${p.lastError.message}` : ''}`).join('\n') + '\n' : ''
+    return columns.map(row => row.map((cell, index) => index < 4 ? cell.padEnd(widths[index]!) : cell).join('  ')).join('\n') + '\n' + poolLines + data.errors.map(error => `${error.target}: ${error.message}`).join('\n')
 }
 function integer(name: string, min: number, max: number) {
     return (raw: string) => { const value = Number(raw); if (!Number.isInteger(value) || value < min || value > max) throw new InvalidArgumentError(`${name} must be between ${min} and ${max}.`); return value }
@@ -545,10 +552,11 @@ export const program = new Command().name('woreda').version(pkg.version).descrip
     .addHelpText('beforeAll', () => process.stdout.isTTY && !modes().nopretty && !modes().json ? '\n' + logo() + '\n' : '')
     .action(() => program.help())
 
-function action<A extends unknown[]>(run: (...args: A) => Promise<unknown>) {
+/** `humanByDefault`: commands only a person runs (login, logout) print readable errors unless --json. */
+function action<A extends unknown[]>(run: (...args: A) => Promise<unknown>, o: { humanByDefault?: boolean } = {}) {
     return async (...args: A) => {
         try { const value = await run(...args); if (value !== undefined) await output(value) }
-        catch (error) { const message = redact(error instanceof Error ? error.message : String(error)); const options = modes(); await write('stderr', options.human ? message + '\n' : formatJson({ error: { code: 'operation_failed', message } }, { stream: 'stderr', nopretty: options.nopretty })); process.exitCode = 1 }
+        catch (error) { const message = redact(error instanceof Error ? error.message : String(error)); const options = modes(); const human = options.human || (o.humanByDefault === true && !options.json); await write('stderr', human ? message + '\n' : formatJson({ error: { code: 'operation_failed', message } }, { stream: 'stderr', nopretty: options.nopretty })); process.exitCode = 1 }
     }
 }
 function addOptions(command: Command) {
@@ -573,7 +581,7 @@ hosts.command('remove').argument('<name>').option('--yes', 'confirm configuratio
     await confirmRemoval(`Forget machine ${name}?`, options.yes)
     delete settings.hosts[name]; await saveSettings(settings); return { name, removed: true }
 }))
-program.command('status').description('join GitHub state and actual SSH service health').action(action(async () => snapshot(await loadSettings())))
+program.command('status').description('join GitHub state and actual SSH service health, and this host\'s mirab runner pools').action(action(async () => ({ ...(await snapshot(await loadSettings())), pools: await pools(), budget: (await hostBudget()) ?? null })))
 program.command('doctor').description('check runner health; nonzero exit if managed runners are unhealthy').action(action(async () => {
     const data = await snapshot(await loadSettings())
     if (data.errors.length || data.runners.some(row => row.host && !['idle', 'busy'].includes(row.status))) process.exitCode = 1
@@ -593,6 +601,31 @@ program.command('update').argument('<runner>').description('verify and install t
 program.command('labels').argument('<runner>').requiredOption('--set <csv>', 'replace custom labels; automatic OS/architecture labels stay').description('manage workflow routing labels').action(action((selector: string, options: { set: string }) => setLabels(selector, options.set)))
 program.command('remove').argument('<runner>').description('stop service and unregister from GitHub; keep files by default').option('--yes', 'confirm removal without prompting').option('--force', 'allow interruption of an active job').option('--purge', 'delete files created by woreda after successful removal').option('--github-only', 'revoke registration only; remote service/files remain').action(action(removeRunner))
 program.command('logs').argument('<runner>').description('stream a selected SDK or job log (plain text)').option('--lines <count>', 'recent lines', integer('Lines', 1, 10000), 60).option('--follow', 'follow appended logs').option('--jobs', 'worker job log instead of runner log').action(action(logs))
+// login and logout are for people at a terminal (an agent never approves a
+// login), so they print readable text unless --json is asked for.
+const humanUnlessJson = () => !modes().json
+/** An OSC 8 hyperlink, so the URL opens with a click/tap even where the terminal wouldn't detect it. */
+export const hyperlink = (url: string, tty = process.stderr.isTTY) => tty ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : url
+/** OSC 52: asks the terminal (across SSH too) to put the text on the clipboard; terminals that don't allow it ignore it. */
+const toClipboard = (text: string) => { if (process.stderr.isTTY) process.stderr.write(`\x1b]52;c;${Buffer.from(text).toString('base64')}\x07`) }
+export function deviceCodeText(c: { uri: string; code: string }, tty = process.stderr.isTTY) {
+    return `\nTo let woreda register runners for you, open\n\n    ${hyperlink(c.uri, tty)}\n\nand enter the code\n\n    ${tty ? chalk.bold(c.code) : c.code}${tty ? '   (sent to your clipboard, if your terminal allows it)' : ''}\n\nWaiting for you to approve it on GitHub…`
+}
+const day = (iso: string | null) => iso ? new Date(iso).toLocaleDateString('en-CA', { dateStyle: 'medium' }) : null
+program.command('login').description('authorize woreda on GitHub (device flow, the Woreda GitHub App), for woreda serve').option('--file <path>', 'where to keep the login', defaultLoginFile()).option('--client-id <id>', 'another GitHub App with the device flow', WOREDA_CLIENT_ID).action(action(async (options: { file: string; clientId: string }) => {
+    const human = humanUnlessJson()
+    const r = await deviceLogin({ file: options.file, clientId: options.clientId, show: c => { if (human) { toClipboard(c.code); console.error(deviceCodeText(c)) } else console.error(`Open ${c.uri} and enter: ${c.code}`) } })
+    if (!human) return r
+    const until = day(r.refreshExpiresAt)
+    await write('stdout', `\nLogged in to GitHub as ${r.user}.${until ? ` woreda keeps the login fresh by itself until ${until}; run woreda login again after that.` : ''}\nSaved in ${r.file}.\n`)
+}, { humanByDefault: true }))
+program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).action(action(async (options: { file: string }) => {
+    const r = await logout(options.file)
+    if (!humanUnlessJson()) return r
+    await write('stdout', `${r.removed ? 'Logged out: removed' : 'Not logged in: nothing at'} ${r.file}.\nTo revoke the approval on GitHub too: ${hyperlink('https://github.com/settings/apps/authorizations', process.stdout.isTTY)}\n`)
+}, { humanByDefault: true }))
+program.command('serve').argument('<path>', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running for this user (macOS LaunchAgent)').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string, options: { install?: boolean; mirabConfig: string }) => options.install ? installService(path) : serve(path, options.mirabConfig)))
+program.command('image').description('mirab runner images').command('build').argument('<path>', 'a runner definition (.ts) or a folder of them').description('build (or find cached) each definition\'s runner image').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action((path: string, options: { mirabConfig: string }) => buildImages(path, options.mirabConfig)))
 program.command('jobs').argument('<owner/repo>').description('recent workflow runs and links').option('--limit <count>', 'number of runs', integer('Limit', 1, 100), 5).action(action((scope: string, options: { limit: number }) => jobs(scope, options.limit)))
 program.command('groups').argument('<org>').description('list organization runner access groups').action(action((scope: string) => { identifier.parse(scope); return pages<Group>(`orgs/${scope}/actions/runner-groups`, 'runner_groups') }))
 

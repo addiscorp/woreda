@@ -3,9 +3,10 @@
 // person who approved it, limited to the App's one permission (organisation
 // self-hosted runners). It lasts 8 hours and is refreshed from the stored
 // refresh token, which rotates on every refresh.
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { checkWritable, writePrivate } from '../private-file.ts'
+import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 /** The Woreda GitHub App (github.com/apps/woreda-workflow-runners): public. */
 export const WOREDA_CLIENT_ID = 'Iv23liu5YW8cArbfuRQX'
@@ -35,10 +36,7 @@ const at = (seconds: number | undefined, now: number) => seconds ? new Date(now 
 type TokenReply = { access_token?: string; expires_in?: number; refresh_token?: string; refresh_token_expires_in?: number; error?: string; error_description?: string; interval?: number }
 
 async function save(file: string, login: StoredLogin) {
-    await mkdir(dirname(file), { recursive: true, mode: 0o700 })
-    const tmp = `${file}.${process.pid}.tmp`
-    await writeFile(tmp, JSON.stringify(login, null, 2) + '\n', { mode: 0o600 })
-    await rename(tmp, file)
+    await writePrivate(file, JSON.stringify(login, null, 2) + '\n')
 }
 
 export async function loadLogin(file = defaultLoginFile()): Promise<StoredLogin | undefined> {
@@ -48,6 +46,8 @@ export async function loadLogin(file = defaultLoginFile()): Promise<StoredLogin 
 /** The device flow: shows a code to enter at github.com/login/device, waits for approval, stores the tokens. */
 export async function deviceLogin(o: { clientId?: string; file?: string; show?: (code: { uri: string; code: string }) => void; fetcher?: Fetch; sleep?: (ms: number) => Promise<void>; now?: () => number } = {}) {
     const clientId = o.clientId ?? WOREDA_CLIENT_ID, file = o.file ?? defaultLoginFile(), fetcher = o.fetcher ?? fetch
+    // Before any code is shown: an approval that can't be saved is wasted.
+    await checkWritable(file)
     const show = o.show ?? (c => console.error(`Open ${c.uri} and enter: ${c.code}`)), sleep = o.sleep ?? (ms => Bun.sleep(ms)), now = o.now ?? Date.now
     const code = await form<{ device_code: string; user_code: string; verification_uri: string; expires_in: number; interval: number }>(fetcher, `${GITHUB}/login/device/code`, { client_id: clientId })
     show({ uri: code.verification_uri, code: code.user_code })

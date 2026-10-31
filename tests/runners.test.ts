@@ -249,3 +249,10 @@ describe('host.json (what a host lends runner VMs)', () => {
         await expect(loadHostConfig(d)).rejects.toThrow(/host\.json: vmMemoryMiB/)
     })
 })
+
+test("a definitions folder's hidden files (macOS's ._ copies) are not definitions", async () => {
+    const defs = await mkdtemp(join(resolve('.tmp'), 'defs-'))
+    await writeFile(join(defs, 'a.ts'), "import { defineRunner } from 'mirab'\nimport { github } from 'woreda'\nexport default defineRunner({ name: 'a', forge: github({ scope: 'zegadb', token: 'file:/dev/null' }), vm: { vcpus: 1, memoryMiB: 1024, diskGiB: 8 } })\n")
+    await writeFile(join(defs, '._a.ts'), Buffer.from([0, 5, 22, 7, 0, 2, 0, 0]))
+    expect((await loadDefinitions(defs)).map(d => d.name)).toEqual(['a'])
+})

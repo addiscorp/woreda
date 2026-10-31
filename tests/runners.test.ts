@@ -141,6 +141,9 @@ describe('queued jobs (for on-demand pools)', () => {
             ],
             '/repos/zegadb/zega/actions/runs?status=queued': { workflow_runs: [{ id: 1 }] },
             '/repos/zegadb/zega/actions/runs?status=in_progress': { workflow_runs: [{ id: 2 }] },
+            // A pull request's run GitHub reports as pending: its job is still queued (earth#70, 31 Oct).
+            '/repos/zegadb/zega/actions/runs?status=pending': { workflow_runs: [{ id: 4 }] },
+            '/repos/zegadb/zega/actions/runs/4/jobs': { jobs: [{ status: 'queued', labels: ['mirab-linux-arm64'] }] },
             '/repos/zegadb/zega/actions/runs/1/jobs': { jobs: [
                 { status: 'queued', labels: ['mirab-linux-arm64'] },
                 { status: 'queued', labels: ['ubuntu-latest'] },
@@ -161,7 +164,8 @@ describe('queued jobs (for on-demand pools)', () => {
             const path = u.pathname + (status ? `?status=${status}` : '')
             const headers = init.headers as Record<string, string>
             const etag = `"${path}"`
-            const body = routes[path]
+            // A status nobody listed: no runs in it.
+            const body = routes[path] ?? (status ? { workflow_runs: [] } : undefined)
             if (body === undefined) { calls.push({ path, status: 404 }); return new Response('{}', { status: 404 }) }
             if (headers['if-none-match'] === etag) { calls.push({ path, ifNoneMatch: etag, status: 304 }); return new Response(null, { status: 304 }) }
             calls.push({ path, status: 200 })
@@ -170,11 +174,11 @@ describe('queued jobs (for on-demand pools)', () => {
         return { calls, fetcher }
     }
 
-    test('counts queued jobs whose labels the runner has (any case), in queued and running workflows; skips archived repos', async () => {
+    test('counts queued jobs whose labels the runner has (any case), in queued, pending and running workflows; skips archived repos', async () => {
         const api = org()
         const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` }, api.fetcher)
         // First poll refreshes the repository list and asks every live repository.
-        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(3)
+        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(4)
         expect(api.calls.some((c) => c.path.startsWith('/repos/zegadb/attic'))).toBe(false)
         // An x64 runner takes none of them.
         expect(await forge.queued!({ labels: ['mirab-linux-x64'], platform: 'linux-x64' })).toBe(0)
@@ -185,7 +189,7 @@ describe('queued jobs (for on-demand pools)', () => {
         const forge = github({ scope: 'zegadb', token: `file:${join(dir, 'token')}` }, api.fetcher)
         await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })
         const first = api.calls.length
-        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(2)
+        expect(await forge.queued!({ labels: ['mirab-linux-arm64'], platform: 'linux-arm64' })).toBe(3)
         const second = api.calls.slice(first)
         expect(second.some((c) => c.path.startsWith('/repos/zegadb/old'))).toBe(false)
         expect(second.length).toBeGreaterThan(0)

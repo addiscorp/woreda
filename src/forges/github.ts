@@ -257,14 +257,15 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
             started: (line) => /Running job: /.test(line),
         },
         /** Queued jobs, in the scope's recently pushed repositories, that a
-         *  runner with these labels would be given. Workflow runs still
-         *  queued, and running ones with jobs waiting, both count. */
+         *  runner with these labels would be given. A queued job can sit in a
+         *  run GitHub calls queued, pending (often a pull request's run while
+         *  no runner has its labels yet), requested or in_progress: all count. */
         async queued({ labels, platform }) {
             const t = await token()
             const mine = githubLabels(labels, platform)
             let n = 0
             const ask = async (full: string) => {
-                for (const status of ['queued', 'in_progress']) {
+                for (const status of ['queued', 'pending', 'requested', 'in_progress']) {
                     const runs = await cachedGet<{ workflow_runs: { id: number }[] }>(
                         `${o.api}/repos/${full}/actions/runs?status=${status}&per_page=50`,
                         t,

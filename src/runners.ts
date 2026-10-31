@@ -34,10 +34,11 @@ const isDefinition = (value: unknown): value is RunnerDefinition =>
     !!value && typeof value === 'object' && typeof (value as RunnerDefinition).name === 'string' && typeof (value as RunnerDefinition).forge?.ticket === 'function'
 
 /** The runner definitions in a .ts file, or in every .ts file of a folder (each exports defineRunner(...) as default). */
+/** The definitions in `path` (a .ts file, or a folder's .ts files; hidden ones such as macOS's ._ copies are skipped). */
 export async function loadDefinitions(path: string): Promise<RunnerDefinition[]> {
     resolveImports()
     const full = resolve(path)
-    const files = (await stat(full)).isDirectory() ? (await readdir(full)).filter(name => name.endsWith('.ts') && !name.endsWith('.d.ts')).sort().map(name => join(full, name)) : [full]
+    const files = (await stat(full)).isDirectory() ? (await readdir(full)).filter(name => name.endsWith('.ts') && !name.endsWith('.d.ts') && !name.startsWith('.')).sort().map(name => join(full, name)) : [full]
     const defs: RunnerDefinition[] = []
     for (const file of files) {
         const module = await import(file)

@@ -4,14 +4,17 @@ import { Command, Help, InvalidArgumentError } from 'commander'
 import chalk, { Chalk } from 'chalk'
 import inquirer from 'inquirer'
 import { z } from 'zod'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import pkg from '../package.json'
 import type { BudgetSnapshot, RunnerState } from 'mirab/runner'
-import { buildImages, defaultMirabConfig, hostBudget, installService, pools, serve } from './runners.ts'
+import { buildImages, defaultMirabConfig, hostBudget, installService, loadDefinitions, pools, serve } from './runners.ts'
 import { WOREDA_CLIENT_ID, defaultLoginFile, deviceLogin, logout } from './forges/github-login.ts'
+import { writePrivate } from './private-file.ts'
+import { SERVICE_LOGIN, installLinuxService, loginForService, uninstallLinuxService } from './linux-service.ts'
+import { installFirecracker, removeLinuxNetwork, setupLinuxNetwork } from 'mirab/runner'
 
 const identifier = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/)
 const scopeSchema = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/)
@@ -46,11 +49,7 @@ export async function loadSettings(path = configPath()): Promise<Settings> {
 }
 export async function saveSettings(settings: Settings, path = configPath()) {
     configSchema.parse(settings)
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    const temp = `${path}.${process.pid}.tmp`
-    await writeFile(temp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
-    await chmod(temp, 0o600)
-    await rename(temp, path)
+    await writePrivate(path, JSON.stringify(settings, null, 2) + '\n')
 }
 export async function execute(args: string[], stdin?: string, timeout = 30_000): Promise<string> {
     const child = Bun.spawn(args, { stdin: stdin === undefined ? 'ignore' : new TextEncoder().encode(stdin), stdout: 'pipe', stderr: 'pipe' })
@@ -612,19 +611,43 @@ export function deviceCodeText(c: { uri: string; code: string }, tty = process.s
     return `\nTo let woreda register runners for you, open\n\n    ${hyperlink(c.uri, tty)}\n\nand enter the code\n\n    ${tty ? chalk.bold(c.code) : c.code}${tty ? '   (sent to your clipboard, if your terminal allows it)' : ''}\n\nWaiting for you to approve it on GitHub…`
 }
 const day = (iso: string | null) => iso ? new Date(iso).toLocaleDateString('en-CA', { dateStyle: 'medium' }) : null
-program.command('login').description('authorize woreda on GitHub (device flow, the Woreda GitHub App), for woreda serve').option('--file <path>', 'where to keep the login', defaultLoginFile()).option('--client-id <id>', 'another GitHub App with the device flow', WOREDA_CLIENT_ID).action(action(async (options: { file: string; clientId: string }) => {
-    const human = humanUnlessJson()
-    const r = await deviceLogin({ file: options.file, clientId: options.clientId, show: c => { if (human) { toClipboard(c.code); console.error(deviceCodeText(c)) } else console.error(`Open ${c.uri} and enter: ${c.code}`) } })
-    if (!human) return r
+/** Shows the device code the way a person at a terminal (or a log) reads it best. */
+const showCode = (human: boolean) => (c: { uri: string; code: string }) => {
+    if (human) { toClipboard(c.code); console.error(deviceCodeText(c)) } else console.error(`Open ${c.uri} and enter: ${c.code}`)
+}
+const loggedInText = async (r: Awaited<ReturnType<typeof deviceLogin>>, tail = '') => {
     const until = day(r.refreshExpiresAt)
-    await write('stdout', `\nLogged in to GitHub as ${r.user}.${until ? ` woreda keeps the login fresh by itself until ${until}; run woreda login again after that.` : ''}\nSaved in ${r.file}.\n`)
+    await write('stdout', `\nLogged in to GitHub as ${r.user}.${until ? ` woreda keeps the login fresh by itself until ${until}; run woreda login again after that.` : ''}\nSaved in ${r.file}.${tail}\n`)
+}
+program.command('login').description('authorize woreda on GitHub (device flow, the Woreda GitHub App), for woreda serve').option('--file <path>', 'where to keep the login', defaultLoginFile()).option('--service', 'for the woreda service on this Linux machine (run with sudo)').option('--client-id <id>', 'another GitHub App with the device flow', WOREDA_CLIENT_ID).action(action(async (options: { file: string; service?: boolean; clientId: string }) => {
+    const human = humanUnlessJson()
+    const r = options.service
+        ? await loginForService(file => deviceLogin({ file, clientId: options.clientId, show: showCode(human) })) as Awaited<ReturnType<typeof deviceLogin>>
+        : await deviceLogin({ file: options.file, clientId: options.clientId, show: showCode(human) })
+    if (!human) return r
+    await loggedInText(r, options.service ? ' The woreda service picks it up now.' : '')
 }, { humanByDefault: true }))
-program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).action(action(async (options: { file: string }) => {
-    const r = await logout(options.file)
+program.command('logout').description('forget the GitHub login on this machine').option('--file <path>', 'the login to remove', defaultLoginFile()).option('--service', "the woreda service's login (run with sudo)").action(action(async (options: { file: string; service?: boolean }) => {
+    const r = await logout(options.service ? SERVICE_LOGIN : options.file)
     if (!humanUnlessJson()) return r
     await write('stdout', `${r.removed ? 'Logged out: removed' : 'Not logged in: nothing at'} ${r.file}.\nTo revoke the approval on GitHub too: ${hyperlink('https://github.com/settings/apps/authorizations', process.stdout.isTTY)}\n`)
 }, { humanByDefault: true }))
-program.command('serve').argument('<path>', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running for this user (macOS LaunchAgent)').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string, options: { install?: boolean; mirabConfig: string }) => options.install ? installService(path) : serve(path, options.mirabConfig)))
+program.command('serve').argument('[path]', 'a runner definition (.ts) or a folder of them').description('run each job in a fresh mirab VM, one runner per definition, until stopped').option('--install', 'keep it running: a LaunchAgent on macOS; on Linux a systemd service with its own user (run with sudo)').option('--uninstall', 'Linux: stop and remove the service (keeps its login and definitions)').option('--slots <n>', 'Linux --install: VMs that can run at once (tap devices)', integer('Slots', 1, 256), 16).option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action(async (path: string | undefined, options: { install?: boolean; uninstall?: boolean; slots: number; mirabConfig: string }) => {
+    const mirab = { installFirecracker, setupLinuxNetwork, removeLinuxNetwork }
+    if (options.uninstall) return uninstallLinuxService({ mirab, log: line => console.error(line) })
+    if (!path) throw Error('give the runner definitions: woreda serve <path>')
+    if (!options.install) return serve(path, options.mirabConfig)
+    if (process.platform !== 'linux') return installService(path)
+    const human = humanUnlessJson()
+    return installLinuxService(path, {
+        slots: options.slots,
+        mirab,
+        validate: () => loadDefinitions(path), // refuse to install something that won't load
+        log: line => console.error(line),
+        // At a terminal, log in right away, so the service starts in one step.
+        login: process.stdin.isTTY ? async () => { await deviceLogin({ file: SERVICE_LOGIN, show: showCode(human) }) } : undefined,
+    })
+}))
 program.command('image').description('mirab runner images').command('build').argument('<path>', 'a runner definition (.ts) or a folder of them').description('build (or find cached) each definition\'s runner image').option('--mirab-config <dir>', 'mirab config directory', defaultMirabConfig()).action(action((path: string, options: { mirabConfig: string }) => buildImages(path, options.mirabConfig)))
 program.command('jobs').argument('<owner/repo>').description('recent workflow runs and links').option('--limit <count>', 'number of runs', integer('Limit', 1, 100), 5).action(action((scope: string, options: { limit: number }) => jobs(scope, options.limit)))
 program.command('groups').argument('<org>').description('list organization runner access groups').action(action((scope: string) => { identifier.parse(scope); return pages<Group>(`orgs/${scope}/actions/runner-groups`, 'runner_groups') }))

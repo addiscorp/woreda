@@ -226,8 +226,9 @@ export function github(input: GithubOptions, fetcher: Fetch = fetch): Forge {
                                     `rm -f ${tarball}`,
                                     // Linux only: the runner's libraries (macOS has them).
                                     isDarwin(platform) ? 'true' : `${RUNNER_DIR}/bin/installdependencies.sh`,
-                                    // The runner may update itself in place; let it.
-                                    `chown -R 1001:1001 ${RUNNER_DIR}`,
+                                    // The runner may update itself in place; let it. On macOS by
+                                    // name: sysadminctl may give runner another UID (501 on macOS 27).
+                                    isDarwin(platform) ? `chown -R runner:staff ${RUNNER_DIR}` : `chown -R 1001:1001 ${RUNNER_DIR}`,
                                 ].join(' && '),
                             ],
                         },

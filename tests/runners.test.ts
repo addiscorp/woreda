@@ -102,6 +102,9 @@ describe('the GitHub forge adapter', () => {
         expect(script).toContain('actions-runner-osx-arm64-2.338.2.tar.gz')
         expect(script).toContain(`echo '${SHA}  /opt/actions-runner/runner.tar.gz' | shasum -a 256 -c -`)
         expect(script).not.toContain('installdependencies.sh')
+        // Owned by the runner by name: macOS gave it UID 501, not 1001.
+        expect(script).toContain('chown -R runner:staff /opt/actions-runner')
+        expect(script).not.toContain('1001')
         const job = forge.guest.job({ name: 'a', secret: { jit: 'JIT' } }, 'darwin-arm64')
         expect(job.files[0]!.path).toBe('/private/var/run/mirab/jit')
         expect(job.steps[0]!.argv[2]).toContain('exec /usr/bin/sudo -E -H -u runner -- ./run.sh')

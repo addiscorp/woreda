@@ -107,3 +107,7 @@ bun run build
 The CLI lives in one TypeScript file, `src/woreda.ts`. Standalone releases include the runtime. No dashboard server or separate database is needed.
 
 For releases, see [npm publishing](docs/publishing.md).
+
+## License
+
+[MIT](LICENSE)

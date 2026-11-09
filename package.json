@@ -32,7 +32,7 @@
     "url": "https://github.com/addiscorp/woreda.git"
   },
   "author": "Sami Fouad",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "files": [
     "src/",
     "README.md",
